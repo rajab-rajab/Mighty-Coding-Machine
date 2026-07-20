@@ -351,6 +351,61 @@ flowchart LR
     Execute --> Audit[Stream result and record activity]
 ```
 
+### Windows PowerShell and Terminal Integration
+
+MCM provides a Windows-compatible integrated terminal that starts a hidden `cmd.exe` subprocess in the configured
+workspace root. This is intentional: it avoids unreliable `pty` and `winpty` dependencies on Windows while preserving
+interactive standard input, standard output, and standard error through ordinary subprocess pipes. Separate daemon
+reader threads stream output character-by-character through Socket.IO to the desktop terminal panel, so prompts such as
+`Name:` remain interactive and Python errors remain visible.
+
+The default shell is **Command Prompt**, but PowerShell is fully available from the integrated terminal whenever it is
+installed. Use `powershell` for Windows PowerShell or `pwsh` for PowerShell 7. For example:
+
+```powershell
+# Run a PowerShell script from the active MCM workspace
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1
+
+# Or use PowerShell 7 when it is installed
+pwsh -NoProfile -Command "Get-ChildItem; python .\main.py"
+
+# Activate a project virtual environment in the current terminal session
+& 'C:\path\to\project\.venv\Scripts\Activate.ps1'
+```
+
+MCM starts each terminal in the configured workspace. For a nested generated project, first run a command such as
+`cd .\Greeting_App` before using project-relative PowerShell commands. The **Run** button does not depend on the current
+shell directory: it resolves the active Monaco file to an absolute workspace path, chooses `python` for Python files or
+`node` for JavaScript and TypeScript files, sends the command to the terminal, and streams stdout/stderr back to the UI.
+User-entered terminal commands remain interactive; agent-initiated risky operations still pass through MCM's approval
+policy.
+
+#### Windows Terminal Data Flow
+
+```mermaid
+flowchart LR
+    UI[Run button or terminal input] --> Socket[Socket.IO terminal event]
+    Socket --> Session[TerminalSession]
+    Session --> CMD[Hidden cmd.exe process in workspace]
+    CMD --> PS[Optional powershell or pwsh command]
+    CMD --> Python[Python or Node process]
+    CMD --> Out[stdout pipe]
+    CMD --> Err[stderr pipe]
+    Out --> Readers[Daemon reader threads]
+    Err --> Readers
+    Readers --> Events[terminal_output Socket.IO events]
+    Events --> Panel[Integrated terminal panel]
+```
+
+| Terminal behavior | Implementation and benefit |
+| --- | --- |
+| Windows-safe process model | `cmd.exe` with piped stdin/stdout/stderr; no PTY or WinPTY dependency |
+| Workspace context | The subprocess working directory is the configured MCM workspace |
+| PowerShell access | Launch `powershell` or `pwsh` explicitly from the terminal when needed |
+| Interactive programs | User input is written to stdin, allowing console prompts and REPL-style commands |
+| Visible diagnostics | stdout and stderr are streamed separately to the terminal panel |
+| Clean desktop UX | Windows startup flags hide the child console window while preserving output in MCM |
+
 ### Monaco Editor Workspace
 
 MCM uses **Monaco Editor** as its primary code-editing surface and maintains a separate Monaco instance for SQL queries.
@@ -359,10 +414,20 @@ content and dirty state separate. When a generated file, Explorer item, Search r
 MCM normalizes the path, loads the current disk content through the PyWebView workspace bridge, selects the matching
 model, updates the active-project state, and refreshes the workspace tree.
 
+The desktop loads Monaco Editor version `0.52.2` through its frontend loader and assigns each model an
+`inmemory://coding-machine/...` URI. The model map avoids stale-editor content when users switch between generated
+projects or search results. In the native desktop application, file reads and writes use the PyWebView API; the browser
+fallback is only for non-desktop preview behavior and is not a substitute for workspace file storage.
+
 Language mode is selected from the file extension for Python, JavaScript, TypeScript, HTML, CSS, JSON, Markdown,
 PowerShell, shell scripts, SQL, XML, and YAML; unsupported extensions remain plain text. The editor enables automatic
 layout, indentation and bracket-pair guides, bracket colorization, sticky scroll, smooth scrolling, and dirty-file
 tracking while keeping the minimap disabled for a focused desktop IDE layout.
+
+Monaco provides syntax-aware editing for the supported language modes; MCM deliberately keeps file-system authority
+outside the editor. Monaco never receives unrestricted disk access: the bridge validates every path against the active
+workspace before a file is read or written. This separation gives users a professional editing experience while keeping
+local file operations within MCM's security boundary.
 
 Save reads the active Monaco model and writes it only through the workspace-scoped bridge. **Ctrl+S** saves the active
 file, and **Ctrl+F5** or **Run** executes that same active editor file through the integrated terminal. MCM resolves the
@@ -391,6 +456,15 @@ flowchart LR
 | Main Monaco editor | Edit project source, configuration, and documentation files | The active tab, active project, Save, and Run use the same normalized file path |
 | SQL Monaco editor | Compose database queries in SQL mode | Queries pass through the database connection and approval layer |
 | Workspace Explorer and Search | Locate generated or existing files | Opening a result loads the corresponding disk content into Monaco |
+
+| Monaco workflow | User action | MCM behavior |
+| --- | --- | --- |
+| Open | Click an Explorer item, Search result, generated file, or restored session tab | Normalize path, obtain the per-file model, load disk content, and select the active tab |
+| Edit | Type in Monaco | Mark only that file as dirty while retaining separate models for other tabs |
+| Save | Click **Save** or press `Ctrl+S` | Read the active model and write it through the workspace-scoped PyWebView bridge |
+| Run | Click **Run** or press `Ctrl+F5` | Resolve the same active file under the active project, then execute it in the integrated terminal |
+| Close and reopen | Close a tab and select the file again | Reload the current workspace content so saved changes remain authoritative |
+| Query database | Open Database panel and use SQL editor | Keep SQL editing separate and route execution through connection and approval controls |
 
 ### Prompt Caching
 
