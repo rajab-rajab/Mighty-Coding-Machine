@@ -76,7 +76,8 @@ access are controlled by the user's OpenAI account.
 │  - Terminal            │  │ Project  Test  Frontend     │    │
 │  - Skills Panel        │  │ Git  Security  Deployment   │    │
 │  - RAG Search          │  └─────────────────────────────┘    │
-│                        │  Tools + PyWebView File Bridge      │
+│                        │  26 Skills + 25 Built-in Tools      │
+│                        │  Approval Engine + File Bridge      │
 ├────────────────────────┴─────────────────────────────────────┤
 │  Socket.IO (Real-time Streaming)                             │
 │  ChromaDB (Memory) + SQLite (Metadata)                       │
@@ -92,9 +93,11 @@ flowchart TB
     UI -->|Workspace bridge| Bridge[Scoped PyWebView API]
     Server --> Engine[Agent Engine]
     Engine --> Router[Capability Router]
-    Router --> Agents[12 Conditional Agents]
+    Router --> Skills[26 Dynamic Skills]
+    Skills --> Agents[12 Conditional Agents]
+    Skills --> Tools[25 Built-in Tools]
     Agents --> OpenAI[Configured OpenAI Model]
-    Agents --> Tools[Approved Tool Registry]
+    Agents --> Tools
     Tools --> Workspace[Workspace Files]
     Tools --> Git[Git Repository]
     Tools --> Database[SQLite, PostgreSQL, MySQL]
@@ -140,7 +143,8 @@ flowchart LR
 
     API --> State[Request state, session, active project]
     State --> Router[Capability router]
-    Router --> Agent[Selected agent and injected Skills/Tools]
+    Router --> Skills[Selected Skills and Tools]
+    Skills --> Agent[Selected agent]
 
     Workspace[Workspace files] --> Indexer[Indexer and watcher]
     Indexer --> Vectors[(ChromaDB codebase)]
@@ -523,11 +527,104 @@ MCM uses **12 conditional agents**: **Orchestrator**, **Planner**, **Code**, **D
 **Project**, **Test**, **Frontend**, **Git**, **Security**, and **Deployment**. The router invokes only the specialist
 needed for the request, instead of running every agent in a fixed chain.
 
-The **Skills** layer dynamically adds domain guidance and tools, including Python, JavaScript, SQLite, Backend API,
-Frontend UI, Testing and Quality, Security Audit, Git Workflow, Windows Packaging, Documentation, Performance
-Diagnostics, and Codebase RAG. The **Tools** layer provides workspace-scoped file operations, code execution, terminal
-sessions, database queries, semantic search, memory, Git operations, quality checks, deployment support, and governed
-MCP connections.
+The **Skills** layer dynamically adds domain guidance and the appropriate tool schemas to a selected agent. The
+**Tools** layer exposes governed function calls. MCM ships with **26 selectable Skills** and **25 selectable built-in
+Tools**. Connected MCP servers can contribute additional tools at runtime, but those discovered tools are deliberately
+not counted here because they depend on the server configuration and permission policy.
+
+#### Exact Skill Catalog — 26 Skills
+
+| Skill group | Exact skill IDs and display names |
+| --- | --- |
+| Languages — 13 | `python` — Python; `javascript` — JavaScript; `typescript` — TypeScript; `html-css` — HTML & CSS; `java` — Java; `csharp` — C#; `c-cpp` — C / C++; `go` — Go; `rust` — Rust; `php` — PHP; `ruby` — Ruby; `kotlin` — Kotlin; `swift` — Swift |
+| Database — 2 | `sqlite` — SQLite; `database-engineering` — Database Engineering |
+| Application engineering — 2 | `backend-api` — Backend API Engineering; `frontend-ui` — Frontend UI Engineering |
+| Quality and security — 4 | `testing-quality` — Testing and Quality; `debugging` — Debugging and Diagnostics; `security-audit` — Security Audit; `performance-diagnostics` — Performance Diagnostics |
+| Source control — 1 | `git-workflow` — Git Workflow |
+| Deployment — 1 | `windows-packaging` — Windows Packaging |
+| Productivity and context — 3 | `documentation` — Documentation; `requirements-planning` — Requirements and Planning; `codebase-rag` — Codebase RAG |
+
+#### Exact Built-in Tool Catalog — 25 Tools
+
+| Tool group | Exact tool IDs and display names | Default risk |
+| --- | --- | --- |
+| Workspace — 5 | `file-read` — File Read; `file-write` — File Write; `file-list` — File List; `workspace-search` — Workspace Search; `scaffold-project` — Scaffold Project | Read or write inside the validated workspace |
+| Search — 1 | `codebase-search` — Codebase Search | Read-only semantic code retrieval |
+| Execution — 3 | `run-code` — Run Code; `present-code` — Present Code; `analyze-error` — Analyze Error | Controlled execution or read-only presentation/diagnosis |
+| Database — 3 | `db-connect` — Database Connect; `db-list-tables` — Database List Tables; `db-execute-query` — Database Execute Query | Connection, read, or approval-governed SQL write |
+| Quality — 4 | `project-inventory` — Project Inventory; `dependency-manifest` — Dependency Manifest; `python-syntax-check` — Python Syntax Check; `run-tests` — Run Tests | Read-only inspection or controlled test execution |
+| Planning — 1 | `create-plan` — Create Plan | Read-only planning output |
+| Source control — 4 | `git-status` — Git Status; `git-diff` — Git Diff; `git-history` — Git History; `git-action` — Git Action | Read-only inspection or approval-governed mutation |
+| Memory — 3 | `memory-save` — Memory Save; `memory-search` — Memory Search; `preference-update` — Preference Update | Persistent local workspace data |
+| Deployment — 1 | `request-deployment-approval` — Deployment Approval | Elevated approval request |
+
+MCP-discovered tools follow the connected server's read-only or write-capable policy, are subject to timeouts and audit
+logging, and require approval when their risk level demands it.
+
+#### Agents, Skills, and Tools ER Diagram
+
+```mermaid
+erDiagram
+    REQUEST {
+        string request_id PK
+        string user_message
+        string active_project_path
+        string status
+    }
+    AGENT {
+        string agent_name PK
+        string role
+        int token_budget
+        int retry_limit
+        int timeout_seconds
+    }
+    AGENT_RUN {
+        string run_id PK
+        string request_id FK
+        string agent_name FK
+        string task_id
+        string model
+        string status
+        int total_tokens
+        float execution_time_seconds
+    }
+    SKILL {
+        string skill_id PK
+        string display_name
+        string category
+        string prompt_extension
+    }
+    TOOL {
+        string tool_id PK
+        string display_name
+        string category
+        string risk
+    }
+    MCP_SERVER {
+        string server_id PK
+        string server_type
+        string connection_state
+        string policy
+    }
+    MCP_TOOL {
+        string tool_name PK
+        string server_id FK
+        string risk
+        string state
+    }
+
+    REQUEST ||--o{ AGENT_RUN : creates
+    AGENT ||--o{ AGENT_RUN : executes
+    AGENT_RUN }o--o{ SKILL : injects
+    AGENT_RUN }o--o{ TOOL : enables
+    SKILL }o--o{ TOOL : contributes
+    MCP_SERVER ||--o{ MCP_TOOL : discovers
+    MCP_TOOL }o--o{ AGENT_RUN : may_enable
+```
+
+This is a **logical runtime ER diagram**, not a claim that all entities are stored in one SQL database. Agents, Skills,
+and built-in Tools are registered in Python; `agent_runs` and agent-performance summaries are persisted in SQLite; MCP
+tools are discovered dynamically after an approved server connection.
 
 | Agent | Conditional responsibility |
 | --- | --- |
@@ -552,6 +649,54 @@ MCP connections.
 | Intelligence | Codebase search, memory search, syntax and dependency checks | Read-only by default; local retrieval stays scoped |
 | Source control | Status, diff, stage, commit, branch, push, pull | Active-project scope and approval for mutating operations |
 | Extensions | MCP Fetch, Git, GitHub, and local bridge tools | Disabled by default, discovery, timeout, audit, and approval policy |
+
+## Example Prompts and MCM Workflows
+
+MCM uses conditional routing, so the examples below show the **typical** workflow rather than a fixed chain. A simple
+request normally uses one primary specialist. Planner, Test, Review, Security, Git, and Deployment agents join only
+when the request or risk level justifies them.
+
+| Complexity | Example prompt | Typical route, Skills, and Tools | Expected outcome |
+| --- | --- | --- | --- |
+| Simple | `Create a single-file Python console app that asks for a name and prints Welcome <name>.` | Code Agent + `python`; workspace inspection, File Write, Run Code | A new workspace project, `main.py` opened in Monaco, then runnable in the terminal |
+| Simple | `Explain what calculate_customer_total does in this project.` | Code Agent + `codebase-rag`; Codebase Search and Workspace Search | A grounded explanation with relevant file paths and snippets |
+| Medium | `Fix the traceback in main.py and run the smallest relevant test.` | Debug Agent + `debugging` and `codebase-rag`; Analyze Error, File Read, Python Syntax Check, Run Tests | Root-cause analysis, focused diff, test result, and review before writing changes |
+| Medium | `Add a responsive settings panel to the existing HTML and CSS.` | Frontend Agent + `frontend-ui` and `html-css`; Workspace Search, File Read, File Write | UI-focused changes that preserve the existing layout and validate relevant files |
+| Medium | `Create a SQLite todos table and show incomplete todos.` | Database Agent + `sqlite` and `database-engineering`; Database Connect, Database List Tables, Database Execute Query | Visible schema/query workflow in the Database panel; writes require confirmation |
+| Medium | `Show the Git diff, stage main.py, and commit it with the message Add greeting flow.` | Git Agent + `git-workflow`; Git Status, Git Diff, Git Action | Diff and staged state are shown; staging and commit require approval |
+| Complex | `Build a Flask todo API with validation, persistence, tests, documentation, and a review of the final changes.` | Planner Agent first; then Code, Test, and Review as needed with `requirements-planning`, `backend-api`, `python`, `testing-quality`, and `documentation` | A scoped plan, implementation in a separate project folder, targeted tests, documentation, and a final review/diff |
+| Security-sensitive | `Audit this repository for path traversal and secret-exposure risks.` | Security Agent + `security-audit` and `codebase-rag`; Project Inventory, Dependency Manifest, Workspace Search | Evidence-based findings and remediation guidance; no destructive changes run automatically |
+| Release | `Package this application for Windows and verify the executable.` | Deployment Agent + `windows-packaging`; Project Inventory, Dependency Manifest, Deployment Approval | Packaging plan and artifact checks; building or release actions require elevated approval |
+
+### Simple Prompt Workflow
+
+```mermaid
+flowchart LR
+    P[User: Create a Python greeting app] --> R[Capability Router]
+    R --> C[Code Agent + Python Skill]
+    C --> W[Create isolated project and main.py]
+    W --> E[Open file in Monaco and refresh Explorer]
+    E --> U[User reviews, saves, and runs]
+    U --> T[Integrated terminal shows output]
+```
+
+### Complex Prompt Workflow
+
+```mermaid
+flowchart LR
+    P[User: Build a tested Flask todo API] --> R[Capability Router]
+    R --> Plan[Planner Agent: scope and acceptance criteria]
+    Plan --> Code[Code Agent: implementation]
+    Code --> Test[Test Agent: focused checks]
+    Test --> Review[Review Agent: quality and regression review]
+    Review --> Diff[User reviews and accepts proposed changes]
+    Diff --> Done[Saved project, tests, and final summary]
+```
+
+For complex work, MCM preserves structured task state across handoffs: objective, explicit constraints, plan, decisions,
+artifacts, completed work, remaining actions, risks, and handoff history. Each handoff records a reason and confidence
+score. Per-agent token budgets, timeouts, and a maximum of two retries prevent unbounded loops and make failures visible
+to the user.
 
 ## License and Use
 
