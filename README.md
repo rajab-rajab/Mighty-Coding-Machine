@@ -69,12 +69,12 @@ access are controlled by the user's OpenAI account.
 │  + Monaco Editor (CDN) │        + GPT-5.6 / Codex           │
 │  + xterm.js (CDN)      │                                     │
 ├────────────────────────┼─────────────────────────────────────┤
-│  Frontend Panels       │  AgentSDK Orchestration (6 Agents)  │
+│  Frontend Panels       │  Agent Orchestration (12 Agents)    │
 │  - Chat UI              │  ┌─────────────────────────────┐    │
-│  - Editor              │  │   Orchestrator              │    │
-│  - DB Visualizer       │  │   Code  Database            │    │
-│  - Terminal            │  │   Debug  Review             │    │
-│  - Skills Panel        │  │   Project                   │    │
+│  - Editor              │  │ Orchestrator  Planner  Code │    │
+│  - DB Visualizer       │  │ Database  Debug  Review     │    │
+│  - Terminal            │  │ Project  Test  Frontend     │    │
+│  - Skills Panel        │  │ Git  Security  Deployment   │    │
 │  - RAG Search          │  └─────────────────────────────┘    │
 │                        │  Tools + PyWebView File Bridge      │
 ├────────────────────────┴─────────────────────────────────────┤
@@ -82,6 +82,101 @@ access are controlled by the user's OpenAI account.
 │  ChromaDB (Memory) + SQLite (Metadata)                       │
 └──────────────────────────────────────────────────────────────┘
 ```
+
+### Runtime Component Diagram
+
+```mermaid
+flowchart TB
+    User[Developer] --> UI[PyWebView Desktop UI]
+    UI -->|HTTP and Socket.IO| Server[Flask and Flask-SocketIO]
+    UI -->|Workspace bridge| Bridge[Scoped PyWebView API]
+    Server --> Engine[Agent Engine]
+    Engine --> Router[Capability Router]
+    Router --> Agents[12 Conditional Agents]
+    Agents --> OpenAI[Configured OpenAI Model]
+    Agents --> Tools[Approved Tool Registry]
+    Tools --> Workspace[Workspace Files]
+    Tools --> Git[Git Repository]
+    Tools --> Database[SQLite, PostgreSQL, MySQL]
+    Tools --> MCP[MCP Client Manager]
+    Tools --> RAG[ChromaDB RAG and Memory]
+    Bridge --> Workspace
+    Server --> Sessions[Sessions, Preferences, Metrics]
+```
+
+### Request Lifecycle
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant UI as MCM Desktop UI
+    participant S as Flask Socket.IO Server
+    participant R as Capability Router
+    participant A as Selected Agent
+    participant T as Approved Tools
+    participant M as OpenAI Model
+
+    U->>UI: Send coding request
+    UI->>S: agent_message
+    S->>R: Classify intent and recommend capabilities
+    R-->>UI: Agent, Skills, Tools, confidence, reason
+    S->>A: Structured task state
+    A->>T: Search workspace or RAG when relevant
+    A->>M: Prompt with stable cache prefix
+    M-->>A: Text or structured tool call
+    A->>T: Execute permitted operation or request approval
+    T-->>S: Result, diff, output, or error
+    S-->>UI: Streamed progress and final response
+    UI-->>U: Review, accept, save, or run
+```
+
+### Overall Data Flow Diagram
+
+```mermaid
+flowchart LR
+    User[User] -->|Prompt, click, edit, SQL, approval| UI[MCM Desktop UI]
+    UI -->|Socket.IO request| API[Flask API and Socket.IO handlers]
+    UI -->|Secure file read or write| Bridge[PyWebView workspace bridge]
+
+    API --> State[Request state, session, active project]
+    State --> Router[Capability router]
+    Router --> Agent[Selected agent and injected Skills/Tools]
+
+    Workspace[Workspace files] --> Indexer[Indexer and watcher]
+    Indexer --> Vectors[(ChromaDB codebase)]
+    User -->|Search query| Search[Search panel]
+    Search --> Vectors
+    Vectors --> Context[Relevant chunks, file paths, line metadata]
+    Context --> Agent
+
+    Agent -->|Prompt and stable cache key| Model[Configured OpenAI model]
+    Model -->|Text or tool call| Agent
+    Agent -->|Validated call| Tools[Governed tool registry]
+
+    Tools --> Bridge
+    Bridge --> Workspace
+    Tools --> DB[Database manager]
+    DB --> ExternalDB[(SQLite, PostgreSQL, MySQL)]
+    Tools --> Git[Git manager]
+    Git --> Repository[(Active project repository)]
+    Tools --> MCP[MCP client manager]
+    MCP --> Services[Approved MCP servers]
+    Tools --> Terminal[Terminal session]
+
+    Agent --> Metrics[(Agent metrics and preferences)]
+    Tools --> Audit[Activity and MCP audit logs]
+    Agent -->|Chunks, diffs, progress, errors| API
+    API -->|Socket.IO events| UI
+    UI -->|Rendered output| User
+```
+
+| Layer | Primary responsibility | Key technologies |
+| --- | --- | --- |
+| Desktop experience | Editor, chat, panels, project navigation, terminal output | PyWebView, HTML, CSS, JavaScript, Monaco, Alpine.js |
+| Real-time backend | HTTP APIs, Socket.IO events, lifecycle management | Flask, Flask-SocketIO, standard threading |
+| Agent system | Intent routing, handoffs, policies, progress, metrics | OpenAI API, structured task state, Skills, Tools |
+| Local intelligence | Semantic code retrieval, memory, indexing | ChromaDB, all-MiniLM-L6-v2, watchdog, SQLite |
+| Safe operations | File, Git, SQL, terminal, MCP, and approval controls | Python subprocess, SQLAlchemy, Git, MCP |
 
 ## Features
 
@@ -124,6 +219,186 @@ confirmation, Frontend handles UI-only work, and Test/Review remain conditional 
   review dependency manifests, and parse Python syntax without installing packages, executing shell commands, or
   modifying files.
 - **Windows-native delivery:** PyWebView desktop window, system tray lifecycle, secure user workspace, and PyInstaller `--onedir` packaging.
+
+## Core Systems: RAG, MCP, Databases, Git, and Prompt Caching
+
+### Local Codebase RAG
+
+**Retrieval-Augmented Generation (RAG)** gives an agent relevant facts from the current workspace before it answers or
+changes code. This is important for real projects because an agent should first understand existing conventions,
+functions, dependencies, and file locations instead of guessing or creating duplicate logic.
+
+MCM walks the configured workspace, skips generated and dependency folders, and splits eligible files into
+**500-character chunks with 50-character overlap**. Each chunk retains its file path, extension, and line-range metadata.
+The chunks are stored in ChromaDB's persistent `codebase` collection. File changes are detected by a watcher and are
+incrementally re-indexed after a debounce interval; users can also run a manual reindex from the Search panel.
+
+For semantic retrieval, MCM uses ChromaDB's built-in `DefaultEmbeddingFunction`, based on the local
+**all-MiniLM-L6-v2** embedding model. This is an embedding model, not a generative LLM: it converts code and questions
+into vectors so related concepts can be found locally. The selected OpenAI model then uses the retrieved snippets to
+produce the final response. MCM combines semantic matches with exact workspace text matching, so it can find both
+natural-language concepts and precise symbols, filenames, or error messages. Retrieval works without an OpenAI API key;
+an API key is only needed for live generative agent calls.
+
+#### RAG Retrieval Pipeline
+
+```mermaid
+flowchart LR
+    Files[Workspace UTF-8 Files] --> Filter[Extension and directory filters]
+    Filter --> Chunk[500-character chunks with 50-character overlap]
+    Chunk --> Embed[Local all-MiniLM-L6-v2 embeddings]
+    Embed --> Codebase[(ChromaDB codebase collection)]
+    Question[User or Agent Question] --> QueryEmbed[Local query embedding]
+    QueryEmbed --> Semantic[Semantic top matches]
+    Files --> Exact[Workspace exact-text matching]
+    Semantic --> Hybrid[Hybrid ranking]
+    Exact --> Hybrid
+    Hybrid --> Context[File path, lines, and relevant snippets]
+    Context --> Model[Selected OpenAI model]
+    Model --> Answer[Grounded answer or change plan]
+```
+
+### MCP Integration
+
+**Model Context Protocol (MCP)** is MCM's controlled extension layer for connecting AI agents to external tools and
+data sources. MCM can act as an MCP client through the MCP Server Manager and can also expose a local, stdio-based MCP
+server for compatible clients.
+
+Servers are disabled by default. A user must save a server configuration, select **Connect**, and approve the launch.
+MCM then discovers the server's tools, applies connection and execution timeouts, records an audit log, and injects only
+connected and permitted tools into the requesting agent. Built-in presets support read-only Fetch, Git, GitHub, the
+local Codex CLI bridge, and trusted remote HTTP MCP endpoints. Read-only policies block mutating operations; any enabled
+write-capable tool requires explicit approval. This lets MCM gain capabilities without granting unrestricted access to
+shell commands, credentials, deployments, databases, or files outside the workspace.
+
+### Database Workspace
+
+MCM provides a synchronous SQLAlchemy database layer designed for stable Windows threading. It supports **SQLite**,
+**PostgreSQL**, and **MySQL** connections, identified by a user-provided connection ID. The Database panel can test a
+connection, list its tables, run SQL in a dedicated editor, and render returned columns and rows in a data grid.
+
+Database work is governed by the same safety model as the rest of MCM. Workspace-relative SQLite targets are confined to
+the selected workspace, destructive or write-oriented SQL is classified before execution, and the user is asked for
+approval when required. Agents can use these same tools through structured function calls, allowing them to inspect a
+schema or assist with queries while keeping the final database operation visible and controlled.
+
+#### MCM Persistence and Metadata ER Diagram
+
+```mermaid
+erDiagram
+    PREFERENCES {
+        string key PK
+        string value
+    }
+    AGENT_PERFORMANCE {
+        string agent_name PK
+        int runs
+        int successes
+        int failures
+        int cancelled
+        float total_execution_seconds
+        int total_tokens
+        string last_status
+        string last_run_at
+    }
+    AGENT_RUNS {
+        string run_id PK
+        string request_id
+        string task_id
+        string agent_name
+        string status
+        string model
+        float execution_time_seconds
+        int total_tokens
+        int handoff_count
+        string error
+        string recorded_at
+    }
+    AGENT_PERFORMANCE ||--o{ AGENT_RUNS : aggregates
+```
+
+`preferences.db` stores user preferences, while `agent_metrics.db` stores the performance tables above. ChromaDB stores
+the separate `memory` and `codebase` vector collections used by semantic retrieval; they are intentionally not SQL tables.
+
+### Git Source Control
+
+The Source Control panel uses a workspace-scoped Git manager rather than arbitrary shell commands. It works with the
+active project repository and provides repository initialization, status, branch switching, history, visual diffs,
+stage/unstage operations, local commits, and configured remote push/pull actions. Git runs are non-interactive, use
+explicit timeouts, and hide terminal windows on Windows.
+
+This connection between the editor and Git workflow makes AI-assisted changes auditable: users can inspect a diff, save
+the active file, stage only intended files, write a meaningful commit message, and record a clean project milestone.
+Mutating source-control operations remain approval-controlled.
+
+#### Safe Change and Approval Flow
+
+```mermaid
+flowchart LR
+    Request[Agent or user action] --> Scope[Validate workspace and active project scope]
+    Scope --> Risk{Operation risk}
+    Risk -->|Read or safe local run| Execute[Execute with timeout]
+    Risk -->|File write, Git write, SQL write| Review[Show approval or diff review]
+    Risk -->|Destructive SQL, shell, deployment| Elevated[Require elevated typed approval]
+    Review --> Approved{Approved?}
+    Elevated --> Approved
+    Approved -->|Yes| Execute
+    Approved -->|No or expired| Cancel[Cancel safely and report]
+    Execute --> Audit[Stream result and record activity]
+```
+
+### Monaco Editor Workspace
+
+MCM uses **Monaco Editor** as its primary code-editing surface and maintains a separate Monaco instance for SQL queries.
+The main editor creates one in-memory Monaco model per workspace-relative file, so switching tabs keeps each open file's
+content and dirty state separate. When a generated file, Explorer item, Search result, or session restore opens a file,
+MCM normalizes the path, loads the current disk content through the PyWebView workspace bridge, selects the matching
+model, updates the active-project state, and refreshes the workspace tree.
+
+Language mode is selected from the file extension for Python, JavaScript, TypeScript, HTML, CSS, JSON, Markdown,
+PowerShell, shell scripts, SQL, XML, and YAML; unsupported extensions remain plain text. The editor enables automatic
+layout, indentation and bracket-pair guides, bracket colorization, sticky scroll, smooth scrolling, and dirty-file
+tracking while keeping the minimap disabled for a focused desktop IDE layout.
+
+Save reads the active Monaco model and writes it only through the workspace-scoped bridge. **Ctrl+S** saves the active
+file, and **Ctrl+F5** or **Run** executes that same active editor file through the integrated terminal. MCM resolves the
+file to the active project and configured workspace before it builds the absolute execution path, preventing Explorer,
+editor, and terminal path mismatches. The SQL Monaco editor uses SQL mode and sends queries to the governed database
+layer rather than directly to a shell.
+
+#### Editor Synchronization Diagram
+
+```mermaid
+flowchart LR
+    Explorer[Explorer or Search result] --> Open[Normalize workspace-relative path]
+    Generated[Agent-generated file] --> Open
+    Session[Restored session] --> Open
+    Open --> Bridge[PyWebView scoped read_file]
+    Bridge --> Model[Per-file Monaco model]
+    Model --> State[Active file, tab, dirty state, active project]
+    State --> Save[Ctrl+S writes through scoped bridge]
+    State --> Run[Ctrl+F5 or Run]
+    Run --> Path[Resolve active project and absolute workspace path]
+    Path --> Terminal[Integrated terminal output]
+```
+
+| Editor surface | Purpose | Synchronization guarantee |
+| --- | --- | --- |
+| Main Monaco editor | Edit project source, configuration, and documentation files | The active tab, active project, Save, and Run use the same normalized file path |
+| SQL Monaco editor | Compose database queries in SQL mode | Queries pass through the database connection and approval layer |
+| Workspace Explorer and Search | Locate generated or existing files | Opening a result loads the corresponding disk content into Monaco |
+
+### Prompt Caching
+
+MCM uses **prompt caching** to reduce repeated-token cost and latency on OpenAI models that support provider-side prompt
+caching. It creates a deterministic cache key from the stable parts of an agent request: the model name, system prompt,
+and declared tool schemas. User messages, RAG results, task state, and tool output are deliberately excluded because
+they change from request to request.
+
+When `CM_PROMPT_CACHE_ENABLED=true`, MCM sends this stable cache key with eligible API requests and reports cached prompt
+tokens in the agent metrics panel. This is not a local cache of user conversations or generated code; it is a request hint
+for supported OpenAI API models. If a selected model or client does not support prompt caching, MCM continues normally
+without relying on it.
 
 ## Quick Start
 
@@ -219,20 +494,64 @@ Launch `My MCM.exe` from the complete `dist-mcp/My MCM/` directory. The executab
 
 ```text
 coding-machine/
+├── .gitignore                 # secrets, builds, workspace, and local media exclusions
 ├── app.py
 ├── coding-machine.spec
 ├── backend/
-│   ├── agents/       # orchestration and six agent definitions
-│   ├── memory/       # ChromaDB memory and SQLite preferences
-│   ├── rag/          # chunking, indexing, search, and watcher
-│   ├── security.py   # centralized path and SQL validation
-│   ├── tests/        # pytest suite
-│   └── tools/        # file, code, terminal, database, memory, and RAG tools
+│   ├── agents/                # 12 conditional specialist agents and orchestration
+│   ├── mcp/                   # MCP client manager, presets, local server, and audit support
+│   ├── memory/                # ChromaDB memory, preferences, and agent metrics
+│   ├── rag/                   # chunking, indexing, hybrid search, and file watcher
+│   ├── skills/                # dynamic prompt extensions and agent role playbooks
+│   ├── tests/                 # pytest unit, integration, safety, and packaging checks
+│   ├── tools/                 # secure file, code, terminal, database, RAG, Git, and MCP tools
+│   ├── config.py              # environment, model, workspace, and feature configuration
+│   ├── security.py            # centralized path and SQL validation
+│   └── server.py              # Flask app, Socket.IO events, and HTTP APIs
+├── demo/
+│   ├── gallery/               # Devpost-ready application screenshots
+│   └── mcm-mcp-thumbnail.png  # 3:2 MCP project thumbnail
 └── frontend/
-    ├── index.html
-    ├── css/styles.css
-    └── js/
+    ├── index.html             # IDE shell and panels
+    ├── css/styles.css          # colorful and dark theme system
+    └── js/                     # Socket.IO client, state, editor, and UI workflows
 ```
+
+### Agents, Skills, and Tools
+
+MCM uses **12 conditional agents**: **Orchestrator**, **Planner**, **Code**, **Database**, **Debug**, **Review**,
+**Project**, **Test**, **Frontend**, **Git**, **Security**, and **Deployment**. The router invokes only the specialist
+needed for the request, instead of running every agent in a fixed chain.
+
+The **Skills** layer dynamically adds domain guidance and tools, including Python, JavaScript, SQLite, Backend API,
+Frontend UI, Testing and Quality, Security Audit, Git Workflow, Windows Packaging, Documentation, Performance
+Diagnostics, and Codebase RAG. The **Tools** layer provides workspace-scoped file operations, code execution, terminal
+sessions, database queries, semantic search, memory, Git operations, quality checks, deployment support, and governed
+MCP connections.
+
+| Agent | Conditional responsibility |
+| --- | --- |
+| Orchestrator | Maintains task state, coordinates handoffs, and finishes the response. |
+| Planner | Breaks complex work into requirements, acceptance criteria, and ordered steps. |
+| Code | Implements general backend, scripting, and application logic. |
+| Database | Designs schemas, inspects tables, and assists with governed SQL. |
+| Debug | Diagnoses errors, traces failures, and proposes focused repairs. |
+| Review | Inspects quality, maintainability, correctness, and regression risk. |
+| Project | Scaffolds projects, organizes files, and manages implementation structure. |
+| Test | Creates or runs targeted tests and reports verification results. |
+| Frontend | Handles HTML, CSS, JavaScript, UI behavior, and accessibility work. |
+| Git | Handles explicit source-control analysis and approved repository actions. |
+| Security | Audits security-sensitive work and acts as a risk gate. |
+| Deployment | Handles packaging or release work behind elevated approval. |
+
+| Tool domain | Examples | Guardrail |
+| --- | --- | --- |
+| Workspace | Read, write, list, copy, and search files | Workspace-root and traversal validation |
+| Execution | Python and Node runs, integrated terminal | Subprocess limits, preflight checks, and approvals |
+| Data | Connect, inspect schema, and execute SQL | SQLite scope checks and write/destructive-query confirmation |
+| Intelligence | Codebase search, memory search, syntax and dependency checks | Read-only by default; local retrieval stays scoped |
+| Source control | Status, diff, stage, commit, branch, push, pull | Active-project scope and approval for mutating operations |
+| Extensions | MCP Fetch, Git, GitHub, and local bridge tools | Disabled by default, discovery, timeout, audit, and approval policy |
 
 ## License and Use
 
