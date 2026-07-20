@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="colorful">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f4f8ff" />
+    <title>Mighty Coding Machine (MCM)</title>
+    <link rel="stylesheet" href="/css/styles.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.11.1/styles/github-dark.min.css" />
+    <script defer src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+    <script defer src="/js/alpine-store.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/marked@4.3.0/marked.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/highlight.js@11.11.1/lib/common.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js"></script>
+    <script defer src="/js/main.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  </head>
+  <body>
+    <div class="ide-shell" x-data="cmApp()" x-init="init()" :class="{ 'terminal-hidden': !$store.ui.showTerminal }">
+      <aside class="activity-bar" aria-label="Primary navigation">
+        <div class="brand-mark" aria-label="Mighty Coding Machine">MCM</div>
+        <nav class="activity-nav">
+          <button class="activity-icon is-active" type="button" title="Explorer" aria-label="Explorer" @click="toggleWorkspaceTree()">▦</button>
+          <button class="activity-icon" type="button" title="Search" aria-label="Search" @click="toggleSearchPanel()">⌕</button>
+          <button class="activity-icon" type="button" title="Source control" aria-label="Source control" :class="{ 'is-active': rightPanel === 'source' }" @click="toggleSourceControl()">⑂</button>
+          <button class="activity-icon" type="button" title="Skills" aria-label="Skills" :class="{ 'is-active': skillsOpen }" @click="openSkillsMenu()">✦</button>
+          <button class="activity-icon" type="button" title="Tools" aria-label="Tools" :class="{ 'is-active': toolsOpen }" @click="openToolsMenu()">🛠</button>
+        </nav>
+        <div class="activity-footer">
+          <button class="activity-icon" type="button" title="Settings" aria-label="Settings" :class="{ 'is-active': rightPanel === 'settings' }" @click="openSettingsPanel()">⚙</button>
+        </div>
+      </aside>
+
+      <div class="resizer resizer-left" id="resizer-left" role="separator" aria-label="Resize sidebar"></div>
+
+      <section class="workspace-tree-overlay" x-show="workspaceTreeOpen" x-cloak aria-label="Workspace tree">
+        <header class="workspace-tree-header">
+          <div class="workspace-tree-title">
+            <strong>Workspace</strong>
+            <small class="workspace-root-indicator" x-text="sessionContext.workspaceRoot || 'Workspace root unavailable'" :title="sessionContext.workspaceRoot"></small>
+          </div>
+          <div class="workspace-tree-actions">
+            <button type="button" @click.stop="openWorkspace()" aria-label="Open workspace folder" title="Open workspace folder">▣</button>
+            <button type="button" @click.stop="goToWorkspaceRoot()" aria-label="Go to workspace root" title="Go to workspace root">⌂</button>
+            <button type="button" @click.stop="goUpWorkspaceTree()" aria-label="Go up one folder" title="Go up one folder" :disabled="!workspaceTreePath">↥</button>
+            <button type="button" @click.stop="refreshWorkspaceTree(workspaceTreePath)" aria-label="Refresh workspace tree" title="Refresh workspace tree">↻</button>
+            <button type="button" @click.stop="copyWorkspaceSelection()" aria-label="Copy selected workspace item" title="Copy selected item" :disabled="!workspaceSelectedPath">⧉</button>
+            <button type="button" @click.stop="pasteWorkspaceSelection()" aria-label="Paste into current workspace folder" title="Paste into current folder" :disabled="!workspaceClipboardPath">▣</button>
+            <button type="button" @click.stop="closeWorkspaceTree()" aria-label="Close workspace tree" title="Close workspace tree">×</button>
+          </div>
+        </header>
+        <div class="workspace-tree-status" x-text="workspaceTreeStatus"></div>
+        <div class="workspace-selection-actions" x-show="workspaceSelectedPath">
+          <button type="button" @click="searchWorkspaceSelection()">Search selected</button>
+        </div>
+        <div class="workspace-tree-list">
+          <template x-for="item in workspaceTree" :key="item.path">
+            <div class="workspace-tree-row" :class="{ 'is-selected': workspaceSelectedPath === item.path }">
+              <button class="workspace-tree-select" type="button" :aria-pressed="workspaceSelectedPath === item.path" :title="`Select ${item.name}`" @click.stop="selectWorkspaceItem(item)">✓</button>
+              <button class="workspace-tree-item" type="button" :class="{ 'is-active': $store.cm.activeFile === item.path }" @click="openWorkspaceItem(item)">
+                <span x-text="item.is_dir ? '▸' : '•'" aria-hidden="true"></span>
+                <span x-text="item.name"></span>
+              </button>
+            </div>
+          </template>
+          <div class="workspace-tree-empty" x-show="!workspaceTree.length">No files in workspace.</div>
+        </div>
+      </section>
+
+      <section class="search-overlay" x-show="searchOpen" x-cloak aria-label="Semantic code search">
+        <header class="search-header">
+          <strong>Codebase Search</strong>
+          <button type="button" @click="toggleSearchPanel()" aria-label="Close search">×</button>
+        </header>
+        <form class="search-form" @submit.prevent="searchCodebase()">
+          <input x-ref="searchInput" x-model="searchQuery" type="search" placeholder="Search code semantically..." aria-label="Search codebase" />
+          <button type="submit">Search</button>
+        </form>
+        <div class="file-type-filters">
+          <span>File types</span>
+          <label class="file-type-all"><input type="checkbox" x-model="allFileTypes" @change="if (allFileTypes) indexFileTypes = []" /> All extensions</label>
+          <label><input type="checkbox" value="py" x-model="indexFileTypes" :disabled="allFileTypes" /> Python</label>
+          <label><input type="checkbox" value="js" x-model="indexFileTypes" :disabled="allFileTypes" /> JS</label>
+          <label><input type="checkbox" value="ts" x-model="indexFileTypes" :disabled="allFileTypes" /> TS</label>
+          <label><input type="checkbox" value="html" x-model="indexFileTypes" :disabled="allFileTypes" /> HTML</label>
+          <label><input type="checkbox" value="css" x-model="indexFileTypes" :disabled="allFileTypes" /> CSS</label>
+          <label><input type="checkbox" value="json" x-model="indexFileTypes" :disabled="allFileTypes" /> JSON</label>
+          <label><input type="checkbox" value="txt" x-model="indexFileTypes" :disabled="allFileTypes" /> TXT</label>
+          <label><input type="checkbox" value="md" x-model="indexFileTypes" :disabled="allFileTypes" /> Markdown</label>
+          <label><input type="checkbox" value="yaml" x-model="indexFileTypes" :disabled="allFileTypes" /> YAML</label>
+          <label><input type="checkbox" value="xml" x-model="indexFileTypes" :disabled="allFileTypes" /> XML</label>
+          <label><input type="checkbox" value="sql" x-model="indexFileTypes" :disabled="allFileTypes" /> SQL</label>
+          <button type="button" @click="reindexWorkspace()" :disabled="$store.cm.indexingActive">Reindex</button>
+        </div>
+        <div class="search-status" x-text="searchStatus"></div>
+        <div class="search-results">
+          <template x-for="result in searchResults" :key="result.id">
+            <button class="search-result" type="button" @click="openSearchResult(result)">
+              <strong x-text="result.metadata.file_path"></strong>
+              <small x-text="`Line ${result.metadata.start_line || 1}`"></small>
+              <pre x-text="result.text"></pre>
+            </button>
+          </template>
+        </div>
+      </section>
+
+      <section class="command-palette-backdrop" x-show="$store.ui.showPalette" x-cloak @click="$store.ui.showPalette = false" aria-label="Command palette">
+        <div class="command-palette" @click.stop>
+          <input x-ref="paletteInput" x-model="paletteQuery" @keydown.enter.prevent="runPaletteCommand(filteredCommands()[0])" type="search" placeholder="Type a command..." aria-label="Command palette search" />
+          <div class="command-list">
+            <template x-for="command in filteredCommands()" :key="command.action">
+              <button class="command-item" type="button" @click="runPaletteCommand(command)">
+                <span x-text="command.name"></span>
+                <small x-text="command.action"></small>
+              </button>
+            </template>
+          </div>
+          <div class="command-empty" x-show="!filteredCommands().length">No matching commands.</div>
+        </div>
+      </section>
+
+      <main class="editor-area">
+        <header class="editor-header">
+          <div class="workspace-title">
+            <span class="status-dot"></span>
+            <span>Mighty Coding Machine</span>
+            <small class="workspace-root-header" x-text="sessionContext.workspaceRoot || 'Workspace root unavailable'" :title="sessionContext.workspaceRoot"></small>
+          </div>
+          <div class="editor-actions">
+            <button class="header-button" type="button" @click="runActiveFile()">Run</button>
+            <button class="header-button" type="button" @click="saveFile()">Save</button>
+            <button class="header-button" type="button" @click="formatEditor()">Format</button>
+            <button class="header-button theme-button" type="button" @click="toggleTheme()" :aria-pressed="theme === 'dark'" :title="`Switch to ${theme === 'dark' ? 'colorful' : 'dark'} theme`" aria-label="Toggle theme">
+              <svg class="theme-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9c0-.55-.45-1-1-1h-1.7a2.3 2.3 0 0 1-2.3-2.3V7a4 4 0 0 0-4-4Zm-4.5 8.25a1.25 1.25 0 1 1 0-2.5 1.25 1.25 0 0 1 0 2.5Zm3-3a1.25 1.25 0 1 1 0-2.5 1.25 1.25 0 0 1 0 2.5Zm-3 8a1.25 1.25 0 1 1 0-2.5 1.25 1.25 0 0 1 0 2.5Zm6-8a1.25 1.25 0 1 1 0-2.5 1.25 1.25 0 0 1 0 2.5Z" /></svg>
+              <span x-text="theme === 'dark' ? 'Dark' : 'Colorful'"></span>
+            </button>
+            <button class="header-button icon-button" type="button" aria-label="More actions" title="Open Command Palette (Ctrl+Shift+P)" @click="openCommandPalette()">⋯</button>
+          </div>
+        </header>
+        <div class="editor-tabs">
+          <template x-for="filePath in $store.editor.openFiles" :key="filePath">
+            <div class="editor-tab" :class="{ 'is-active': filePath === $store.cm.activeFile }">
+              <button class="editor-tab-main" type="button" @click="activateEditorFile(filePath)">
+                <span class="file-icon">{}</span>
+                <span x-text="filePath.split('/').pop()"></span>
+                <span class="editor-tab-dirty" x-show="$store.editor.dirtyFiles.includes(filePath)" aria-label="Unsaved changes">●</span>
+              </button>
+              <button class="tab-close" type="button" @click="closeEditorFile(filePath)" aria-label="Close file">×</button>
+            </div>
+          </template>
+          <div class="editor-tab-placeholder">+</div>
+        </div>
+        <section class="code-editor" aria-label="Code editor">
+          <div id="editor" aria-label="Monaco code editor"></div>
+        </section>
+        <section class="welcome-overlay" x-show="$store.editor.openFiles.length === 0" x-cloak aria-label="Mighty Coding Machine welcome">
+          <div class="welcome-brand">MCM</div>
+          <h1>Welcome to Mighty Coding Machine</h1>
+          <p>Open a project or start building with a quick prompt.</p>
+          <div class="welcome-machine-name">Mighty Coding Machine Created by Rajab Baig</div>
+        </section>
+      </main>
+
+      <div class="resizer resizer-bottom" id="resizer-bottom" role="separator" aria-label="Resize terminal panel"></div>
+
+      <section class="bottom-panel" :class="{ 'is-hidden': !$store.ui.showTerminal }" aria-label="Terminal output">
+        <div class="panel-tabs">
+          <button class="panel-tab" :class="{ 'is-active': bottomTab === 'terminal' }" type="button" @click="setBottomTab('terminal')">TERMINAL</button>
+          <button class="panel-tab" :class="{ 'is-active': bottomTab === 'output' }" type="button" @click="setBottomTab('output')">OUTPUT</button>
+          <button class="panel-tab" :class="{ 'is-active': bottomTab === 'problems' }" type="button" @click="setBottomTab('problems')">PROBLEMS</button>
+          <span class="indexing-status" x-text="$store.cm.indexingStatus"></span>
+          <button class="panel-action" type="button" @click="reindexWorkspace()" :disabled="$store.cm.indexingActive">Reindex</button>
+          <div class="work-progress" x-show="$store.cm.workingActive" role="status" aria-live="polite">
+            <span class="work-progress-name" x-text="$store.cm.workingName"></span>
+            <div class="work-progress-track" role="progressbar" aria-label="Current work progress" :aria-valuenow="$store.cm.workingProgress" aria-valuemin="0" aria-valuemax="100">
+              <span class="work-progress-fill" :style="`width: ${$store.cm.workingProgress}%`"></span>
+            </div>
+            <span class="work-progress-value" x-text="`${$store.cm.workingProgress}%`"></span>
+          </div>
+          <span class="panel-spacer"></span>
+          <button class="panel-control" type="button" aria-label="Close panel" @click="toggleTerminal()">×</button>
+        </div>
+        <div class="indexing-error-list" x-show="$store.cm.indexingErrors.length" role="alert">
+          <template x-for="(error, index) in $store.cm.indexingErrors" :key="index">
+            <div x-text="error"></div>
+          </template>
+        </div>
+        <div class="terminal-output" x-ref="terminalOutput" x-show="bottomTab === 'terminal'">
+          <template x-for="(line, index) in $store.cm.terminalLines" :key="index">
+            <div class="terminal-line" :class="`terminal-${line.type}`"><span x-text="line.data"></span></div>
+          </template>
+        </div>
+        <div class="panel-placeholder" x-show="bottomTab === 'output'">No output messages yet.</div>
+        <div class="panel-placeholder" x-show="bottomTab === 'problems'">No problems detected.</div>
+        <form class="terminal-input-row" @submit.prevent="sendTerminalCommand()">
+          <span class="terminal-prompt">$</span>
+          <input x-ref="terminalInput" x-model="terminalInput" :disabled="!$store.cm.terminalConnected" type="text" placeholder="Terminal command..." aria-label="Terminal command" autocomplete="off" />
+          <button class="terminal-close" type="button" @click="closeTerminal()" :disabled="!$store.cm.terminalConnected">×</button>
+        </form>
+      </section>
+
+      <aside class="chat-panel" :style="rightPanelZoomStyle()" aria-label="MCM Agent chat">
+        <header class="chat-header">
+          <div>
+            <div class="chat-title">MCM Agent</div>
+            <div class="chat-subtitle"><span class="connection-dot" :class="{ 'is-connected': $store.cm.connected }"></span><span x-text="$store.cm.connected ? $store.cm.activity : 'Connecting...'">Connecting...</span></div>
+          </div>
+          <div class="right-panel-tabs">
+            <button type="button" :class="{ 'is-active': rightPanel === 'chat' }" @click="rightPanel = 'chat'">Chat</button>
+            <button type="button" :class="{ 'is-active': rightPanel === 'database' }" @click="rightPanel = 'database'; $nextTick(() => window.cmSqlEditor.init())">Database</button>
+            <button type="button" :class="{ 'is-active': rightPanel === 'mcp' }" @click="toggleMcpPanel()">MCP</button>
+          </div>
+          <div class="panel-zoom-controls" aria-label="Right panel zoom">
+            <button type="button" @click="changeRightPanelZoom(-10)" :disabled="rightPanelZoom <= 100" aria-label="Decrease right panel zoom">−</button>
+            <button class="panel-zoom-value" type="button" @click="resetRightPanelZoom()" title="Reset right panel zoom" x-text="`${rightPanelZoom}%`">100%</button>
+            <button type="button" @click="changeRightPanelZoom(10)" :disabled="rightPanelZoom >= 140" aria-label="Increase right panel zoom">+</button>
+          </div>
+        </header>
+        <section class="approval-backdrop" x-show="approvalRequest" x-cloak aria-label="Action approval required">
+          <div class="approval-card" role="dialog" aria-modal="true">
+            <header class="approval-card-header">
+              <div>
+                <strong>Approval Required</strong>
+                <span x-text="approvalRequest ? `${approvalRequest.category} · ${approvalRequest.level}` : ''"></span>
+              </div>
+              <span class="approval-level" :class="approvalRequest ? `level-${approvalRequest.level}` : ''" x-text="approvalRequest ? approvalRequest.level : ''"></span>
+            </header>
+            <p class="approval-summary" x-text="approvalRequest ? approvalRequest.summary : ''"></p>
+            <pre class="approval-details" x-text="approvalRequest ? approvalRequest.details : ''"></pre>
+            <label class="approval-phrase" x-show="approvalRequest && approvalRequest.level === 'elevated'">
+              Type <strong>APPROVE</strong> to continue
+              <input type="text" x-model="approvalPhrase" autocomplete="off" placeholder="APPROVE" />
+            </label>
+            <div class="approval-actions">
+              <button type="button" class="approval-reject" @click="resolveApproval(false)">Reject</button>
+              <button type="button" class="approval-accept" @click="resolveApproval(true)">Approve</button>
+            </div>
+          </div>
+        </section>
+        <div class="session-toolbar" x-show="rightPanel === 'chat'">
+          <span class="session-label" title="Current session" x-text="sessionName">New Session</span>
+          <span class="session-status" x-text="sessionStatus"></span>
+          <button type="button" @click="newSession()">New</button>
+          <button type="button" @click="saveSession()">Save</button>
+          <button type="button" @click="openLoadSession()">Load</button>
+        </div>
+        <div class="chat-messages" x-ref="chatMessages" aria-live="polite" x-show="rightPanel === 'chat'">
+          <div class="welcome-card">
+            <div class="welcome-icon">✦</div>
+            <h1>How can I help?</h1>
+            <p>Ask MCM Agent to explain, create, or improve your code.</p>
+          </div>
+          <div class="orchestration-toolbar">
+            <label><input type="checkbox" x-model="$store.cm.showAgentTrace" /> Trace handoffs</label>
+            <label>Max hops<select x-model.number="handoffLimit"><option value="4">4</option><option value="8">8</option><option value="12">12</option><option value="16">16</option></select></label>
+            <button type="button" @click="clearAgentTrace()">Clear</button>
+            <button type="button" x-show="requestActive" @click="cancelRequest()">Cancel</button>
+            <button type="button" x-show="!requestActive && lastRequest" @click="retryLastRequest()">Retry</button>
+          </div>
+          <div class="agent-metrics" x-show="$store.cm.agentMetrics.execution_time_seconds || $store.cm.agentMetrics.total_tokens">
+            <span x-text="$store.cm.agentMetrics.model || 'Model unknown'"></span>
+            <span x-text="`${$store.cm.agentMetrics.total_tokens || 0} tokens`"></span>
+            <span x-show="$store.cm.agentMetrics.prompt_cache_enabled" x-text="`cached: ${$store.cm.agentMetrics.cached_prompt_tokens || 0}`"></span>
+            <span x-text="`${$store.cm.agentMetrics.execution_time_seconds || 0}s`"></span>
+          </div>
+          <section class="agent-performance-card" x-show="$store.cm.agentPerformance.agents.length" x-cloak aria-label="Persistent agent performance">
+            <header><strong>Agent performance</strong><button type="button" @click="refreshAgentPerformance()">Refresh</button></header>
+            <div class="agent-performance-row agent-performance-heading"><span>Agent</span><span>Success</span><span>Runs</span><span>Avg time</span></div>
+            <template x-for="agent in $store.cm.agentPerformance.agents" :key="agent.agent_name">
+              <div class="agent-performance-row"><span x-text="agent.agent_name"></span><span x-text="`${agent.success_rate}%`"></span><span x-text="agent.runs"></span><span x-text="`${agent.average_execution_time_seconds}s`"></span></div>
+            </template>
+            <div class="agent-performance-history" x-show="$store.cm.agentPerformance.history.length">
+              <strong>Recent outcomes</strong>
+              <template x-for="run in $store.cm.agentPerformance.history.slice(0, 6)" :key="`${run.request_id}-${run.agent_name}`">
+                <div class="agent-performance-history-row"><span x-text="run.agent_name"></span><span :class="`agent-status-${run.status}`" x-text="run.status"></span><span x-text="`${run.execution_time_seconds}s`"></span></div>
+              </template>
+            </div>
+          </section>
+          <section class="agent-plan-card" x-show="$store.cm.agentPlan" x-cloak aria-label="Implementation plan">
+            <header><strong x-text="$store.cm.agentPlan ? $store.cm.agentPlan.title : ''"></strong><span>Planner Agent</span></header>
+            <div class="agent-plan-section"><strong>Steps</strong><ol><template x-for="(step, index) in ($store.cm.agentPlan ? $store.cm.agentPlan.steps : [])" :key="index"><li x-text="step"></li></template></ol></div>
+            <div class="agent-plan-section"><strong>Acceptance criteria</strong><ul><template x-for="(criterion, index) in ($store.cm.agentPlan ? $store.cm.agentPlan.acceptance_criteria : [])" :key="index"><li x-text="criterion"></li></template></ul></div>
+          </section>
+          <section class="agent-state-card" x-show="$store.cm.agentState" x-cloak aria-label="Structured task state">
+            <header><strong>Task State</strong><span x-text="$store.cm.agentState ? $store.cm.agentState.current_step || 'Tracking' : ''"></span></header>
+            <p x-text="$store.cm.agentState ? $store.cm.agentState.objective : ''"></p>
+            <div class="agent-state-section" x-show="$store.cm.agentState && $store.cm.agentState.next_actions && $store.cm.agentState.next_actions.length"><strong>Next actions</strong><ul><template x-for="(action, index) in ($store.cm.agentState ? $store.cm.agentState.next_actions : [])" :key="index"><li x-text="action"></li></template></ul></div>
+            <div class="agent-state-section" x-show="$store.cm.agentState && $store.cm.agentState.completed_work && $store.cm.agentState.completed_work.length"><strong>Completed</strong><ul><template x-for="(item, index) in ($store.cm.agentState ? $store.cm.agentState.completed_work : [])" :key="index"><li x-text="item"></li></template></ul></div>
+          </section>
+          <div class="agent-trace" x-show="$store.cm.showAgentTrace && $store.cm.agentTrace.length">
+            <template x-for="(handoff, index) in $store.cm.agentTrace" :key="index">
+              <span class="agent-trace-chip"><span x-text="handoff.to"></span><small x-show="handoff.reason" x-text="handoff.reason"></small><small x-show="handoff.confidence !== null && handoff.confidence !== undefined" x-text="`${Math.round(handoff.confidence * 100)}% confidence`"></small><small x-show="handoff.policy" x-text="`${handoff.policy.token_budget} tokens · ${handoff.policy.timeout_seconds}s · ${handoff.policy.retry_limit} retries`"></small></span>
+            </template>
+          </div>
+          <section class="diff-review-card" x-show="diffReview" x-cloak aria-label="Generated change review">
+            <header><strong>Review generated change</strong><span x-text="diffReview ? diffReview.path : ''"></span></header>
+            <pre x-text="diffReview ? diffReview.diff : ''"></pre>
+            <div class="diff-review-actions">
+              <button type="button" @click="resolveDiffReview(true)">Accept</button>
+              <button type="button" @click="resolveDiffReview(false)">Reject</button>
+            </div>
+          </section>
+          <template x-for="(message, index) in messages" :key="index">
+            <article class="chat-message" :class="message.role === 'user' ? 'from-user' : 'from-agent'">
+              <div class="message-content" x-html="renderMessage(message)"></div>
+              <button class="copy-message" type="button" x-show="message.role === 'agent'" @click="copyMessage(message)" x-text="message.copyLabel || 'Copy'">Copy</button>
+            </article>
+          </template>
+        </div>
+        <section class="session-dialog-backdrop" x-show="sessionLoadOpen" x-cloak @click="sessionLoadOpen = false" aria-label="Load saved session">
+          <div class="session-dialog" @click.stop>
+            <header class="session-dialog-header">
+              <strong>Load Session</strong>
+              <button type="button" @click="sessionLoadOpen = false" aria-label="Close load session dialog">×</button>
+            </header>
+            <div class="session-dialog-status" x-text="sessionListStatus"></div>
+            <div class="session-list">
+              <template x-for="session in savedSessions" :key="session.session_id">
+                <button class="session-item" type="button" :disabled="!session.valid" @click="loadSession(session.session_id)">
+                  <span class="session-item-copy"><strong x-text="session.name"></strong><small x-text="session.valid ? `${session.message_count} message(s) · ${session.timestamp || 'No timestamp'}` : `Unavailable: ${session.error}`"></small></span>
+                  <span x-text="session.valid ? 'Load' : '!'" aria-hidden="true"></span>
+                </button>
+              </template>
+            </div>
+            <div class="session-empty" x-show="!savedSessions.length">No saved sessions found.</div>
+          </div>
+        </section>
+        <section class="database-panel" x-show="rightPanel === 'database'" x-cloak aria-label="Database manager">
+          <form class="db-connection-form" @submit.prevent="connectDatabase()">
+            <div class="db-section-title">Connection</div>
+            <label>Connection ID<input type="text" x-model="dbForm.connectionId" placeholder="local" /></label>
+            <label>Database type
+              <select x-model="dbForm.dbType">
+                <option value="sqlite">SQLite</option>
+                <option value="postgresql">PostgreSQL</option>
+                <option value="mysql">MySQL</option>
+              </select>
+            </label>
+            <label>Connection string<input type="text" x-model="dbForm.connectionString" placeholder="cm.db or database URL" /></label>
+            <button class="db-action-button" type="submit">Connect</button>
+            <div class="db-status" :class="{ 'is-error': dbStatusError }" x-text="dbStatus">Connect a database to browse its schema.</div>
+            <button class="db-action-button" type="button" @click="runQuery()" :disabled="!$store.cm.activeDbConnection">Run Query</button>
+          </form>
+          <div class="db-connections" x-show="$store.cm.dbConnections.length">
+            <div class="db-section-title">Connections</div>
+            <template x-for="connection in $store.cm.dbConnections" :key="connection.connection_id">
+              <button class="db-connection-item" type="button" :class="{ 'is-active': $store.cm.activeDbConnection === connection.connection_id }" @click="selectDatabase(connection.connection_id)">
+                <span class="connection-dot is-connected"></span><span x-text="connection.connection_id"></span><small x-text="connection.db_type"></small>
+              </button>
+            </template>
+          </div>
+          <div class="schema-browser">
+            <div class="db-section-title">Schema Browser</div>
+            <div class="db-empty" x-show="!$store.cm.dbTables.length">No tables loaded.</div>
+            <template x-for="table in $store.cm.dbTables" :key="table">
+              <button class="db-table-item" type="button" @click="setSql(`SELECT * FROM ${table} LIMIT 100;`)">
+                <span>▤</span><span x-text="table"></span>
+              </button>
+            </template>
+          </div>
+          <div class="db-results" x-show="$store.cm.dbResults">
+            <div class="db-section-title">Results</div>
+            <div class="data-grid-wrap">
+              <table class="data-grid">
+                <thead><tr><template x-for="column in ($store.cm.dbResults ? $store.cm.dbResults.columns : [])" :key="column"><th x-text="column"></th></template></tr></thead>
+                <tbody><template x-for="(row, rowIndex) in ($store.cm.dbResults ? $store.cm.dbResults.rows : [])" :key="rowIndex"><tr><template x-for="column in $store.cm.dbResults.columns" :key="column"><td x-text="row[column] ?? ''"></td></template></tr></template></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="sql-composer">
+            <div class="db-section-title">SQL Query</div>
+            <div id="sql-editor" aria-label="SQL query editor"></div>
+          </div>
+        </section>
+        <section class="source-control-panel" x-show="rightPanel === 'source'" x-cloak aria-label="Source control">
+          <div class="source-control-header">
+            <div>
+              <div class="db-section-title">Source Control</div>
+              <strong x-text="sourceControl.branch || 'Git repository'"></strong>
+            </div>
+            <div class="source-control-header-actions">
+              <button class="source-control-refresh" type="button" @click="refreshSourceControl()" :disabled="sourceControl.loading" aria-label="Refresh source control" title="Refresh source control">↻</button>
+              <button class="source-control-close" type="button" @click="rightPanel = 'chat'" aria-label="Close Source Control" title="Close Source Control">×</button>
+            </div>
+          </div>
+          <div class="source-control-status" :class="{ 'is-error': sourceControl.error }" x-text="sourceControl.loading ? 'Refreshing...' : (sourceControl.error || sourceControl.status)"></div>
+          <div class="source-control-empty" x-show="!sourceControl.isRepo && !sourceControl.loading">
+            <span>Initialize or open a Git repository containing this workspace.</span>
+            <button class="source-control-refresh" type="button" @click="initializeRepository()" :disabled="sourceControl.operationLoading">Initialize Repository</button>
+          </div>
+          <div class="source-control-branch-controls" x-show="sourceControl.isRepo">
+            <label>Branch
+              <select x-model="sourceControl.selectedBranch" :disabled="sourceControl.operationLoading">
+                <template x-for="branch in sourceControl.branches" :key="branch"><option :value="branch" x-text="branch"></option></template>
+              </select>
+            </label>
+            <button class="source-control-refresh" type="button" @click="switchSourceBranch()" :disabled="sourceControl.operationLoading || !sourceControl.selectedBranch">Switch</button>
+          </div>
+          <div class="source-control-remote-controls" x-show="sourceControl.isRepo">
+            <label>Remote
+              <select x-model="sourceControl.remoteName" :disabled="sourceControl.operationLoading">
+                <template x-for="remote in sourceControl.remotes" :key="remote.name"><option :value="remote.name" x-text="remote.name"></option></template>
+              </select>
+            </label>
+            <input x-model="sourceControl.remoteBranch" type="text" placeholder="branch (optional)" aria-label="Remote branch" :disabled="sourceControl.operationLoading" />
+            <button class="source-control-refresh" type="button" @click="syncSourceRemote('pull')" :disabled="sourceControl.operationLoading || !sourceControl.remotes.length">Pull</button>
+            <button class="source-control-refresh" type="button" @click="syncSourceRemote('push')" :disabled="sourceControl.operationLoading || !sourceControl.remotes.length">Push</button>
+          </div>
+          <div class="source-control-changes" x-show="sourceControl.isRepo">
+            <div class="db-section-title">Changes</div>
+            <div class="source-change-empty" x-show="!sourceControl.changes.length">Working tree clean.</div>
+            <template x-for="change in sourceControl.changes" :key="change.repo_path">
+              <div class="source-change-item">
+                <button class="source-change-path" type="button" @click="viewSourceDiff(change)" :title="change.repo_path">
+                  <span class="source-change-badge" x-text="change.status"></span>
+                  <span x-text="change.path"></span>
+                </button>
+                <button class="source-change-action" type="button" @click="stageSourceChange(change)" x-text="change.staged ? 'Unstage' : 'Stage'"></button>
+              </div>
+            </template>
+          </div>
+          <div class="source-control-commit" x-show="sourceControl.isRepo">
+            <textarea x-model="sourceControl.commitMessage" rows="2" placeholder="Commit message" aria-label="Commit message"></textarea>
+            <button class="db-action-button" type="button" @click="commitSourceChanges()" :disabled="!sourceControl.commitMessage.trim()">Commit staged changes</button>
+          </div>
+          <div class="source-control-diff" x-show="sourceControl.diffPath">
+            <div class="db-section-title" x-text="`Diff · ${sourceControl.diffPath}`"></div>
+            <div class="source-diff-lines" x-show="sourceControl.diffLines.length">
+              <template x-for="(line, index) in sourceControl.diffLines" :key="index"><div class="source-diff-line" :class="`is-${line.type}`" x-text="line.text"></div></template>
+            </div>
+            <pre x-show="!sourceControl.diffLines.length" x-text="sourceControl.diff"></pre>
+          </div>
+          <div class="source-control-history" x-show="sourceControl.isRepo">
+            <div class="db-section-title">Commit History</div>
+            <div class="source-history-empty" x-show="!sourceControl.history.length">No commits yet.</div>
+            <template x-for="commit in sourceControl.history" :key="commit.hash">
+              <div class="source-history-item">
+                <code x-text="commit.short_hash"></code>
+                <strong x-text="commit.subject"></strong>
+                <small x-text="`${commit.author} · ${commit.date}`"></small>
+              </div>
+            </template>
+          </div>
+        </section>
+        <section class="mcp-panel" x-show="rightPanel === 'mcp'" x-cloak aria-label="MCP server manager">
+          <div class="mcp-panel-header">
+            <div><div class="db-section-title">MCP Server Manager</div><strong x-text="mcp.selectedServerName || 'Choose a server'">Choose a server</strong></div>
+            <button class="source-control-refresh" type="button" @click="loadMcpServers()" :disabled="mcp.busy">↻</button>
+          </div>
+          <p class="mcp-status" :class="{ 'is-error': mcp.error }" x-text="mcp.error || mcp.status"></p>
+          <div class="mcp-server-list">
+            <template x-for="server in mcp.servers" :key="server.server_id">
+              <button class="mcp-server-item" type="button" :class="{ 'is-active': mcp.selectedServerId === server.server_id }" @click="selectMcpServer(server.server_id)">
+                <span class="connection-dot" :class="{ 'is-connected': server.status === 'connected' }"></span>
+                <span><strong x-text="server.name"></strong><small x-text="`${server.transport} · ${server.read_only ? 'read-only' : 'approved writes'}`"></small></span>
+                <em x-text="server.status"></em>
+              </button>
+            </template>
+          </div>
+          <form class="mcp-config-form" @submit.prevent="saveMcpConfiguration()">
+            <label>Transport<select x-model="mcp.transport"><option value="stdio">Local stdio</option><option value="streamable_http">Remote HTTP</option></select></label>
+            <label x-show="mcp.transport === 'stdio'">Command<input x-model="mcp.command" type="text" placeholder="uvx, npx, or Python path" /></label>
+            <label x-show="mcp.transport === 'stdio'">Arguments<input x-model="mcp.args" type="text" placeholder="Server command arguments" /></label>
+            <label x-show="mcp.transport === 'streamable_http'">Server URL<input x-model="mcp.url" type="url" placeholder="https://server.example/mcp" /></label>
+            <label>Environment variable names<input x-model="mcp.envKeys" type="text" placeholder="GITHUB_PERSONAL_ACCESS_TOKEN" /></label>
+            <label class="mcp-read-only"><input x-model="mcp.readOnly" type="checkbox" /> Read-only policy</label>
+            <div class="mcp-actions">
+              <button class="source-control-refresh" type="submit" :disabled="mcp.busy">Save</button>
+              <button class="db-action-button" type="button" @click="connectMcpServer()" :disabled="mcp.busy || !mcp.selectedServerId">Connect</button>
+              <button class="source-control-refresh" type="button" @click="disconnectMcpServer()" :disabled="mcp.busy || !mcp.selectedServerId">Disconnect</button>
+            </div>
+          </form>
+          <div class="mcp-tools" x-show="mcp.tools.length">
+            <div class="db-section-title">Discovered tools</div>
+            <template x-for="tool in mcp.tools" :key="tool.name">
+              <button class="mcp-tool-item" type="button" :class="{ 'is-active': mcp.selectedToolName === tool.name, 'is-blocked': !tool.allowed }" @click="selectMcpTool(tool)">
+                <span><strong x-text="tool.name"></strong><small x-text="tool.description || 'No description provided.'"></small></span><em x-text="tool.allowed ? tool.risk : 'blocked'"></em>
+              </button>
+            </template>
+          </div>
+          <div class="mcp-call" x-show="mcp.selectedToolName">
+            <div class="db-section-title" x-text="`Call · ${mcp.selectedToolName}`"></div>
+            <textarea x-model="mcp.arguments" rows="4" placeholder="{}" aria-label="MCP tool JSON arguments"></textarea>
+            <button class="db-action-button" type="button" @click="callMcpTool()" :disabled="mcp.busy">Call Tool</button>
+            <pre x-show="mcp.result" x-text="mcp.result"></pre>
+          </div>
+        </section>
+        <section class="settings-panel" x-show="rightPanel === 'settings'" x-cloak aria-label="Application settings">
+          <div class="settings-panel-header">
+            <div>
+              <div class="db-section-title">Settings</div>
+              <strong>Application Preferences</strong>
+            </div>
+            <button class="source-control-close" type="button" @click="rightPanel = 'chat'" aria-label="Close Settings" title="Close Settings">×</button>
+          </div>
+
+          <div class="settings-group">
+            <div class="settings-group-title">Appearance</div>
+            <div class="settings-row">
+              <div><strong>Theme</strong><small x-text="theme === 'dark' ? 'Dark Theme' : 'Colorful Theme'"></small></div>
+              <button class="source-control-refresh" type="button" @click="toggleTheme()">Switch Theme</button>
+            </div>
+          </div>
+
+          <div class="settings-group">
+            <div class="settings-group-title">Workspace</div>
+            <div class="settings-row settings-row-stacked">
+              <div><strong>Current Workspace</strong><small class="settings-path" x-text="sessionContext.workspaceRoot || 'No workspace selected'">No workspace selected</small></div>
+              <button class="source-control-refresh" type="button" @click="openWorkspace()">Open Workspace</button>
+            </div>
+            <p class="settings-help">Changing the workspace restarts the application to keep files, indexing, and terminal state aligned.</p>
+          </div>
+
+          <div class="settings-group">
+            <div class="settings-group-title">Agent Workflow</div>
+            <label class="settings-checkbox"><input type="checkbox" x-model="autoCapabilities" /> Smart Routing</label>
+            <p class="settings-help">Automatically recommends the relevant agents, skills, and tools for each request.</p>
+            <label class="settings-select">Maximum agent handoffs
+              <select x-model.number="handoffLimit">
+                <option :value="4">4</option>
+                <option :value="8">8</option>
+                <option :value="12">12</option>
+                <option :value="16">16</option>
+              </select>
+            </label>
+          </div>
+        </section>
+        <form class="chat-composer" x-show="rightPanel === 'chat'" @submit.prevent="sendMessage()">
+          <div class="skill-picker">
+            <button class="skill-toggle" type="button" @click="skillsOpen = !skillsOpen; toolsOpen = false">
+              <span>✦ Skills</span>
+              <span class="skill-count" x-text="selectedSkills.length ? selectedSkills.length : 'none'">none</span>
+            </button>
+            <div class="skill-menu" x-show="skillsOpen" x-cloak>
+              <div class="menu-heading-row">
+                <div class="skill-menu-heading">Available Skills</div>
+                <button class="menu-close-button" type="button" @click="skillsOpen = false" aria-label="Close Skills menu" title="Close Skills menu">×</button>
+              </div>
+              <div class="skill-menu-note">Select Skills to inject their guidance and scoped tools into the next agent request.</div>
+              <template x-for="skill in skills" :key="skill.id">
+                <label class="skill-option">
+                  <input type="checkbox" :value="skill.id" x-model="selectedSkills" />
+                  <span class="skill-option-icon" x-text="skill.icon"></span>
+                  <span class="skill-option-copy">
+                    <strong x-text="skill.name"></strong>
+                    <small x-text="skill.description"></small>
+                  </span>
+                </label>
+              </template>
+              <div class="skill-empty" x-show="!skills.length">No skills available.</div>
+            </div>
+          </div>
+          <div class="tool-picker">
+            <button class="tool-toggle" type="button" @click="toolsOpen = !toolsOpen; skillsOpen = false">
+              <span>🛠 Tools</span>
+              <span class="tool-count" x-text="selectedTools.length ? selectedTools.length : 'native'">native</span>
+            </button>
+            <div class="tool-menu" x-show="toolsOpen" x-cloak>
+              <div class="menu-heading-row">
+                <div class="tool-menu-heading">Built-in Agent Tools</div>
+                <button class="menu-close-button" type="button" @click="toolsOpen = false" aria-label="Close Tools menu" title="Close Tools menu">×</button>
+              </div>
+              <div class="tool-menu-note">Role-native tools are always available. Select extra tools for the next request; existing safety approvals still apply.</div>
+              <div class="tool-menu-actions">
+                <button type="button" @click="selectedTools = tools.map((tool) => tool.id)">Enable all</button>
+                <button type="button" @click="selectedTools = []">Clear</button>
+              </div>
+              <template x-for="tool in tools" :key="tool.id">
+                <label class="tool-option">
+                  <input type="checkbox" :value="tool.id" x-model="selectedTools" />
+                  <span class="tool-option-copy">
+                    <strong x-text="tool.name"></strong>
+                    <small x-text="`${tool.category} · ${tool.risk} · ${tool.description}`"></small>
+                  </span>
+                </label>
+              </template>
+              <div class="tool-empty" x-show="!tools.length">No tools available.</div>
+            </div>
+          </div>
+          <label class="capability-toggle" title="Automatically recommend a specialist, skills, and least-privilege supporting tools for each request.">
+            <input type="checkbox" x-model="autoCapabilities" />
+            <span>Smart routing</span>
+          </label>
+          <div class="capability-summary" x-show="autoCapabilities && capabilityRecommendation && capabilityRecommendation.enabled" x-cloak>
+            <strong x-text="`Auto: ${capabilityRecommendation.agent}`"></strong>
+            <span x-text="capabilityRecommendation.reason"></span>
+            <small x-text="`Skills: ${(capabilityRecommendation.applied_skills || []).join(', ') || 'role-native'} · Tools: ${(capabilityRecommendation.applied_tools || []).join(', ') || 'role-native'}`"></small>
+          </div>
+          <textarea x-ref="chatInput" x-model="draft" @keydown.enter.prevent="if (!$event.shiftKey) sendMessage()" placeholder="Ask MCM Agent anything..." rows="3" aria-label="Message MCM Agent"></textarea>
+          <div class="composer-footer">
+            <span class="composer-hint">Shift + Enter for new line</span>
+            <button class="send-button" type="submit" :disabled="!draft.trim() || requestActive" aria-label="Send message">↑</button>
+          </div>
+        </form>
+      </aside>
+      <div class="cm-notice" x-show="notice" x-cloak x-text="notice" role="status" aria-live="polite"></div>
+    </div>
+  </body>
+</html>

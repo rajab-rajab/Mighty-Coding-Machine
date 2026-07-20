@@ -1,0 +1,37 @@
+# Credentials and local environment overrides
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+
+chroma_data/
+preferences.db
+workspace/
+__pycache__/
+*.py[cod]
+build/
+build-cm/
+dist/
+dist-cm/
+*.log
+.pytest_cache/
+
+# Generated PyInstaller packages and historical build outputs
+/dist-mcp/
+/build-mcp/
+/dist-*/
+/build-*/
+
+# Temporary isolated pytest work directories
+/.pytest-tmp*/
+
+# Local desktop runtime output
+/.cm-*.out
+/.cm-*.err
+/tmp*/
+
+# Locally rendered demo media; keep lightweight gallery images in version control
+/demo/*.wav
+/demo/*.mp3
+/demo/*.mp4
